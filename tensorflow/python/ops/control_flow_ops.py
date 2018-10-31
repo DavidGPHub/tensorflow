@@ -31,6 +31,7 @@ import six
 
 from tensorflow.core.framework import attr_value_pb2
 from tensorflow.core.protobuf import control_flow_pb2
+from tensorflow.python import tf2
 from tensorflow.python.eager import context
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
@@ -71,8 +72,8 @@ cond_v2 = LazyLoader("cond_v2", globals(),
 while_v2 = LazyLoader("while_v2", globals(),
                       "tensorflow.python.ops.while_v2")
 
-ENABLE_COND_V2 = os.getenv("TF_ENABLE_COND_V2", "0") != "0"
-ENABLE_WHILE_V2 = os.getenv("TF_ENABLE_WHILE_V2", "0") != "0"
+ENABLE_COND_V2 = tf2.enabled() or os.getenv("TF_ENABLE_COND_V2", "0") != "0"
+ENABLE_WHILE_V2 = tf2.enabled() or os.getenv("TF_ENABLE_WHILE_V2", "0") != "0"
 
 # We override the 'tuple' for a control flow op, so we keep python's
 # existing 'tuple' for later use in this module.
@@ -1830,7 +1831,15 @@ class CondContext(ControlFlowContext):
       result.op._set_control_flow_context(self)
       # pylint: enable=protected-access
 
-      self._values.add(result.name)
+      # Mark Switch output as seen by this context and any outer contexts,
+      # just like what we do for normal op outputs in _AddOpInternal() below.
+      ctxt = self
+      while ctxt is not None:
+        # pylint: disable=protected-access
+        ctxt._values.add(result.name)
+        ctxt = ctxt._outer_context
+        # pylint: enable=protected-access
+
       self._external_values[val.name] = result
     return result
 
@@ -3230,7 +3239,12 @@ def while_loop(cond,
   """
   if ENABLE_WHILE_V2 and not context.executing_eagerly():
     return while_v2.while_loop(
-        cond, body, loop_vars, shape_invariants=shape_invariants, name=name)
+        cond,
+        body,
+        loop_vars,
+        shape_invariants=shape_invariants,
+        maximum_iterations=maximum_iterations,
+        name=name)
 
   with ops.name_scope(name, "while", loop_vars):
     if not loop_vars:

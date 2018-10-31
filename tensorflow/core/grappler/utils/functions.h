@@ -19,6 +19,7 @@ limitations under the License.
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include "absl/container/flat_hash_set.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/function.pb.h"
@@ -30,7 +31,19 @@ limitations under the License.
 namespace tensorflow {
 namespace grappler {
 
-using AttrValueMap = std::unordered_map<string, AttrValue>;
+// Returns a set of functions from the function library, that are reachable from
+// the nodes of the graph.
+absl::flat_hash_set<string> ReachableFunctions(
+    const FunctionLibraryDefinition& flib, const GraphDef& graph);
+absl::flat_hash_set<string> ReachableFunctions(
+    const FunctionLibraryDefinition& flib, const FunctionDef& func);
+
+// Returns a copy of FunctionLibraryDefinition with subset of functions that are
+// reachable from the nodes of the graph.
+FunctionLibraryDefinition ReachableFunctionLibraryDefinition(
+    const FunctionLibraryDefinition& flib, const GraphDef& graph);
+FunctionLibraryDefinition ReachableFunctionLibraryDefinition(
+    const FunctionLibraryDefinition& flib, const FunctionDef& func);
 
 // Depending on the function instantiation attributes, input argument to the
 // function might be a single tensor, list of tensors of the same type, or a
@@ -118,8 +131,7 @@ class GrapplerFunctionConnectivity {
 // a function.
 class GrapplerFunctionItemInstantiation {
  public:
-  explicit GrapplerFunctionItemInstantiation(
-      const AttrValueMap* func_instantiation_attr)
+  explicit GrapplerFunctionItemInstantiation(AttrSlice func_instantiation_attr)
       : func_instantiation_attr_(func_instantiation_attr) {}
 
   // Get DataType from attributes by name. Return error if attribute is missing,
@@ -131,7 +143,7 @@ class GrapplerFunctionItemInstantiation {
   Status GetArgType(const OpDef::ArgDef& arg, DataType* data_type) const;
 
  private:
-  const AttrValueMap* func_instantiation_attr_;  // do not own
+  const AttrSlice func_instantiation_attr_;  // do not own
 };
 
 // A special case of GrapplerItem, constructed from a TensorFlow Function.
@@ -139,7 +151,7 @@ class GrapplerFunctionItem : public GrapplerItem {
  public:
   GrapplerFunctionItem() = default;
   GrapplerFunctionItem(string func_name, string description,
-                       AttrValueMap func_attr,
+                       AttrSlice func_attr,
                        std::vector<InputArgExpansion> input_arg_expansions,
                        std::vector<OutputArgExpansion> output_arg_expansions,
                        std::vector<string> keep_nodes, int graph_def_version,
@@ -157,7 +169,7 @@ class GrapplerFunctionItem : public GrapplerItem {
   const OutputArgExpansion& output(int i) const;
   const std::size_t output_size() const;
 
-  const AttrValueMap& func_attr() const;
+  const AttrSlice& func_attr() const;
   const GraphDef& function_body() const;
   GraphDef& mutable_function_body();
 
@@ -173,8 +185,8 @@ class GrapplerFunctionItem : public GrapplerItem {
       std::vector<std::pair<int, int>>* output_mapping);
 
   string description_;
-  AttrValueMap func_attr_;  // Attributes specific to function definition that
-                            // produced this item (FuncDef.attr field).
+  AttrSlice func_attr_;  // Attributes specific to function definition that
+                         // produced this item (FuncDef.attr field).
 
   std::vector<InputArgExpansion> input_arg_expansions_;
   std::vector<OutputArgExpansion> output_arg_expansions_;
@@ -199,14 +211,14 @@ bool IsParametrized(const FunctionDef& func);
 // Resolve function instantiation type parameters from the attributes of the
 // caller node. Return error if type can't be resolved.
 Status InstantiationTypeParameters(
-    const FunctionDef& func, const AttrValueMap& func_instantiation_attr,
+    const FunctionDef& func, const AttrSlice& func_instantiation_attr,
     std::unordered_map<string, DataType>* type_parameters);
 
 // Resolve function instantiation body parameters (values for the function body
 // attr placeholders) from the attributes of the caller node. Return error if
 // type can't be resolved.
 Status InstantiationBodyParameters(
-    const FunctionDef& func, const AttrValueMap& func_instantiation_attr,
+    const FunctionDef& func, const AttrSlice& func_instantiation_attr,
     std::unordered_map<string, AttrValue>* body_parameters);
 
 // Register GrapplerFunctionItem input arg expansion and function body outputs
@@ -234,7 +246,7 @@ Status RemoveUnusedOutputs(const gtl::FlatSet<int>& active_outputs,
 // instantiation attributes (caller node attributes). Returns error if the given
 // function def cannot be converted (e.g. not all attributes are defined).
 Status MakeGrapplerFunctionItem(const FunctionDef& func,
-                                const AttrValueMap& func_instantiation_attr,
+                                const AttrSlice& func_instantiation_attr,
                                 const FunctionLibraryDefinition& flib,
                                 int graph_def_version,
                                 GrapplerFunctionItem* item);

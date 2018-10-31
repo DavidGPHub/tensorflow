@@ -319,6 +319,9 @@ class Tensor(_TensorLike):
     self._value_index = value_index
     self._dtype = dtypes.as_dtype(dtype)
 
+    # This will be set by self._as_tf_output().
+    self._tf_output = None
+
     # This will be set by self.shape().
     self._shape_val = None
 
@@ -601,7 +604,13 @@ class Tensor(_TensorLike):
 
   def _as_tf_output(self):
     # pylint: disable=protected-access
-    return c_api_util.tf_output(self.op._c_op, self.value_index)
+    # NOTE: Beyond preventing unnecessary (re-)allocation, the cached object
+    # also guarantees that a dictionary of tf_output objects will retain a
+    # deterministic (yet unsorted) order which prevents memory blowup in the
+    # cache of executor(s) stored for every session.
+    if self._tf_output is None:
+      self._tf_output = c_api_util.tf_output(self.op._c_op, self.value_index)
+    return self._tf_output
     # pylint: enable=protected-access
 
   def __str__(self):
@@ -4951,6 +4960,7 @@ def container(container_name):
 def _colocate_with_for_gradient(op, gradient_uid, ignore_existing=False):
   if context.executing_eagerly():
     if op is not None:
+      op = internal_convert_to_tensor_or_indexed_slices(op)
       return device(op.device)
     else:
       return NullContextmanager()
@@ -5098,7 +5108,7 @@ def default_session(session):
   return _default_session_stack.get_controller(session)
 
 
-@tf_export("get_default_session")
+@tf_export(v1=["get_default_session"])
 def get_default_session():
   """Returns the default session for the current thread.
 
@@ -5349,6 +5359,12 @@ def init_scope():
       # try-block (just above).
       if outer_graph is not None:
         outer_graph._device_function_stack = outer_device_stack  # pylint: disable=protected-access
+
+
+def executing_eagerly_outside_functions():
+  """Returns True if executing eagerly, even if inside a graph function."""
+  with init_scope():
+    return context.executing_eagerly()
 
 
 @tf_export("enable_eager_execution")

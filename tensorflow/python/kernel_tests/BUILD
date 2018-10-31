@@ -607,7 +607,7 @@ tf_py_test(
 
 tf_py_test(
     name = "matrix_exponential_op_test",
-    size = "small",
+    size = "medium",
     srcs = ["matrix_exponential_op_test.py"],
     additional_deps = [
         "//third_party/py/numpy",
@@ -687,6 +687,7 @@ cuda_py_test(
     size = "medium",
     srcs = ["parameterized_truncated_normal_op_test.py"],
     additional_deps = [
+        "@absl_py//absl/testing:parameterized",
         "//third_party/py/numpy",
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python:client",
@@ -1141,6 +1142,18 @@ cuda_py_test(
 )
 
 tf_py_test(
+    name = "unicode_transcode_op_test",
+    size = "small",
+    srcs = ["unicode_transcode_op_test.py"],
+    additional_deps = [
+        "@absl_py//absl/testing:parameterized",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:string_ops",
+    ],
+)
+
+tf_py_test(
     name = "unique_op_test",
     size = "small",
     srcs = ["unique_op_test.py"],
@@ -1480,9 +1493,7 @@ cuda_py_test(
 
 cuda_py_test(
     name = "control_flow_ops_py_test",
-    # TODO(b/70473603): change this back to "small" once the C API is
-    # permanently enabled
-    size = "large",
+    size = "small",
     srcs = ["control_flow_ops_py_test.py"],
     additional_deps = [
         "//third_party/py/numpy",
@@ -1516,6 +1527,8 @@ cuda_py_test(
         "//tensorflow/python:variables",
         "//tensorflow/python:while_v2",
     ],
+    shard_count = 16,
+    tags = ["no_gpu"],  # TODO(b/117928656)
 )
 
 tf_py_test(
@@ -2714,6 +2727,22 @@ cuda_py_test(
 )
 
 cuda_py_test(
+    name = "huge_slice_op_test",
+    size = "medium",
+    srcs = ["huge_slice_op_test.py"],
+    additional_deps = [
+        "//third_party/py/numpy",
+        "//tensorflow/python:array_ops",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:errors",
+        "//tensorflow/python:framework_for_generated_wrappers",
+    ],
+    tags = [
+        "no_oss",  # Requires 4GB+ RAM
+    ],
+)
+
+cuda_py_test(
     name = "sparse_matmul_op_test",
     size = "medium",
     srcs = ["sparse_matmul_op_test.py"],
@@ -3315,8 +3344,11 @@ cuda_py_test(
         "//tensorflow/python:dtypes",
         "//tensorflow/python:framework",
         "//tensorflow/python:framework_ops",
+        "//tensorflow/python:functional_ops",
         "//tensorflow/python:gradients_impl",
         "//tensorflow/python:list_ops",
+        "//tensorflow/python:math_ops",
+        "//tensorflow/python:tensor_array_grad",
         "//tensorflow/python:tf_optimizer",
         "//tensorflow/python:while_v2",
     ],

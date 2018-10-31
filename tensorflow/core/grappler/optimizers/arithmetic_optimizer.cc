@@ -126,39 +126,6 @@ void SetDataTypeToAttr(DataType dtype, const string& attr_name, NodeDef* node) {
   (*node->mutable_attr())[attr_name].set_type(dtype);
 }
 
-string SourceDataTypeAttrName(const NodeDef& node) {
-  if (node.op() == "Bitcast") {
-    return "T";
-  } else if (node.op() == "Cast") {
-    return "SrcT";
-  } else {
-    LOG(FATAL) << "SourceDataTypeAttrName not implemented for op " << node.op();
-  }
-}
-
-string DestinationDataTypeAttrName(const NodeDef& node) {
-  if (node.op() == "Bitcast") {
-    return "type";
-  } else if (node.op() == "Cast") {
-    return "DstT";
-  } else {
-    LOG(FATAL) << "DestinationDataTypeAttrName not implemented for op "
-               << node.op();
-  }
-}
-
-DataType GetSourceDataType(const NodeDef& node) {
-  return GetDataTypeFromAttr(node, SourceDataTypeAttrName(node));
-}
-
-DataType GetDestinationDataType(const NodeDef& node) {
-  return GetDataTypeFromAttr(node, DestinationDataTypeAttrName(node));
-}
-
-void SetSourceDataType(DataType dtype, NodeDef* node) {
-  SetDataTypeToAttr(dtype, SourceDataTypeAttrName(*node), node);
-}
-
 NodeDef* GetTailOfValuePreservingChain(
     const NodeDef& node, const NodeMap& node_map,
     const std::unordered_set<string>& nodes_to_preserve) {
@@ -1270,7 +1237,12 @@ class RemoveRedundantBitcastStage : public ArithmeticOptimizerStage {
     TF_RETURN_IF_ERROR(EnsureNodeIsSupported(node));
 
     // Bypass Bitcast whose source type and destination type are equal.
-    if (GetSourceDataType(*node) == GetDestinationDataType(*node)) {
+    AttrSlice attrs(*node);
+    DataType input_type;
+    TF_RETURN_IF_ERROR(GetNodeAttr(attrs, "T", &input_type));
+    DataType output_type;
+    TF_RETURN_IF_ERROR(GetNodeAttr(attrs, "type", &output_type));
+    if (input_type == output_type) {
       *simplified_node_name = node->input(0);
       return Status::OK();
     }
@@ -1281,9 +1253,12 @@ class RemoveRedundantBitcastStage : public ArithmeticOptimizerStage {
     TF_RETURN_IF_ERROR(GetInputNode(node->input(0), &operand));
 
     if (IsBitcast(*operand)) {
+      AttrSlice operand_attrs(*operand);
+      DataType operand_input_type;
+      TF_RETURN_IF_ERROR(GetNodeAttr(operand_attrs, "T", &operand_input_type));
       // Bitcast(Bitcast(x, type1), type2) => Bitcast(x, type2)
       bitcast->set_input(0, operand->input(0));
-      SetSourceDataType(GetSourceDataType(*operand), bitcast);
+      SetDataTypeToAttr(operand_input_type, "T", bitcast);
       ctx().node_map->UpdateInput(bitcast->name(), bitcast->input(0),
                                   operand->input(0));
       AddToOptimizationQueue(bitcast);
@@ -1308,7 +1283,12 @@ class RemoveRedundantCastStage : public ArithmeticOptimizerStage {
     TF_RETURN_IF_ERROR(EnsureNodeIsSupported(node));
 
     // Bypass Cast whose source type and destination type are equal.
-    if (GetSourceDataType(*node) == GetDestinationDataType(*node)) {
+    AttrSlice attrs(*node);
+    DataType input_type;
+    TF_RETURN_IF_ERROR(GetNodeAttr(attrs, "SrcT", &input_type));
+    DataType output_type;
+    TF_RETURN_IF_ERROR(GetNodeAttr(attrs, "DstT", &output_type));
+    if (input_type == output_type) {
       *simplified_node_name = node->input(0);
     }
     return Status::OK();
@@ -1853,87 +1833,135 @@ class RemoveRedundantReshape : public ArithmeticOptimizerStage {
   }
 };
 
-// Reorder Cast and Transpose if beneficial.
+// Reorder casting and value-preserving ops if beneficial.
 //
-// A common pattern after the layout optimizer is casting an uint8 NHWC
-// image to float before transposing it to NCHW. It is beneficial to reorder
-// the cast and the transpose to make the transpose process smaller amount
-// of data. This optimization converts
-//   Transpose(Cast(image, dst_type), perm)
+// Original motivation: A common pattern after the layout optimizer is
+// casting an uint8 NHWC image to float before transposing it to NCHW. It
+// is beneficial to reorder the cast and the transpose to make the transpose
+// process smaller amount of data. More generally, this optimization converts
+//   Op(Cast(tensor, dst_type))
 // to
-//   Cast(Transpose(image, perm), dst_type)
-// when sizeof(image.type) < sizeof(dst_type).
+//   Cast(Op(tensor), dst_type)
+// when sizeof(tensor.type) < sizeof(dst_type), and Op is any value-preserving
+// Op, i.e. an op that only reorders the elements in its first input. Similarly,
+// this optimization converts
+//   Cast(Op(tensor), dst_type)
+// to
+//   Op(Cast(tensor, dst_type))
+// when sizeof(tensor.type) > sizeof(dst_type)
 //
-// TODO(jingyue): This optimization can be generalized to a cast followed by
-// a chain of ops that merely reorder elements (e.g. Reshape and
-// DepthToSpace).
-class ReorderCastAndTranspose : public ArithmeticOptimizerStage {
+class ReorderCastLikeAndValuePreserving : public ArithmeticOptimizerStage {
  public:
-  explicit ReorderCastAndTranspose(const GraphOptimizerContext& ctx,
-                                   const ArithmeticOptimizerContext& ctx_ext)
-      : ArithmeticOptimizerStage("ReorderCastAndTranspose", ctx, ctx_ext) {}
-  ~ReorderCastAndTranspose() override = default;
+  explicit ReorderCastLikeAndValuePreserving(
+      const GraphOptimizerContext& ctx,
+      const ArithmeticOptimizerContext& ctx_ext)
+      : ArithmeticOptimizerStage("ReorderCastLikeAndValuePreserving", ctx,
+                                 ctx_ext) {}
+  ~ReorderCastLikeAndValuePreserving() override = default;
 
   bool IsSupported(const NodeDef* node) const override {
-    return IsTranspose(*node) && NodeIsOnCpuOrGpu(node);
+    return (IsValuePreserving(*node) || IsCastLike(*node)) &&
+           !IsCheckNumerics(*node) && NodeIsOnCpuOrGpu(node) &&
+           !IsControlFlow(*node) && !IsInPreserveSet(*node);
   }
 
-  Status TrySimplify(NodeDef* node, string* simplified_node_name) override {
-    const NodeDef* transpose = node;
-
-    // Verify that input to Transpose is the Cast op.
-    NodeDef* cast;
-    TF_RETURN_IF_ERROR(GetInputNode(transpose->input(0), &cast));
-    if (!IsCast(*cast)) return Status::OK();
-
-    // Input to the Cast-Transpose chain.
-    NodeDef* input;
-    TF_RETURN_IF_ERROR(GetInputNode(cast->input(0), &input));
-
-    const DataType src_type = GetSourceDataType(*cast);
-    const DataType dst_type = GetDestinationDataType(*cast);
-
-    const string src_type_name = DataTypeString(src_type);
-    const string dst_type_name = DataTypeString(dst_type);
-
-    // Check if nodes were not already optimized.
-    const string optimized_cast_name =
-        OptimizedNodeName(ParseNodeScopeAndName(cast->name()), dst_type_name);
-    const string optimized_transpose_name = OptimizedNodeName(
-        ParseNodeScopeAndName(transpose->name()), src_type_name);
-
-    bool is_already_optimized =
-        ctx().node_map->NodeExists(optimized_transpose_name) ||
-        ctx().node_map->NodeExists(optimized_cast_name);
-
-    if (IsNumberType(src_type) && IsNumberType(dst_type) &&
-        DataTypeSize(src_type) < DataTypeSize(dst_type) &&
-        !is_already_optimized) {
-      NodeDef* new_transpose = AddCopyNode(optimized_transpose_name, transpose);
-      (*new_transpose->mutable_attr())["T"].set_type(src_type);
-      new_transpose->set_input(0, cast->input(0));
-
-      ctx().node_map->AddOutput(input->name(), new_transpose->name());
-      ctx().node_map->AddOutput(NodeName(new_transpose->input(1)),
-                                new_transpose->name());
-
-      NodeDef* new_cast = AddCopyNode(optimized_cast_name, cast);
-      new_cast->set_input(0, new_transpose->name());
-      ctx().node_map->AddOutput(new_transpose->name(), new_cast->name());
-
-      AddToOptimizationQueue(new_transpose);
-      ForwardControlDependencies(new_transpose, {cast, node});
-
-      *simplified_node_name = new_cast->name();
+  Status TrySimplify(NodeDef* consumer, string* simplified_node_name) override {
+    NodeDef* producer;
+    TF_RETURN_IF_ERROR(GetInputNode(consumer->input(0), &producer));
+    const bool producer_is_cast = IsCastLike(*producer);
+    const bool can_optimize =
+        !IsCheckNumerics(*producer) &&
+        ((producer_is_cast && IsValuePreserving(*consumer)) ||
+         (IsValuePreserving(*producer) && IsCastLike(*consumer)));
+    if (!can_optimize || IsControlFlow(*producer) ||
+        producer->device() != consumer->device()) {
+      return Status::OK();
     }
+
+    const NodeDef* cast_like_node = producer_is_cast ? producer : consumer;
+    const OpDef* cast_like_op_def = nullptr;
+    TF_RETURN_IF_ERROR(OpRegistry::Global()->LookUpOpDef(cast_like_node->op(),
+                                                         &cast_like_op_def));
+    DataType cast_src_type;
+    TF_RETURN_IF_ERROR(InputTypeForNode(*cast_like_node, *cast_like_op_def, 0,
+                                        &cast_src_type));
+    DataType cast_dst_type;
+    TF_RETURN_IF_ERROR(OutputTypeForNode(*cast_like_node, *cast_like_op_def, 0,
+                                         &cast_dst_type));
+    if (!IsFixedSizeType(cast_src_type) || !IsFixedSizeType(cast_dst_type)) {
+      return Status::OK();
+    } else if (producer_is_cast &&
+               DataTypeSize(cast_dst_type) <= DataTypeSize(cast_src_type)) {
+      return Status::OK();
+    } else if (!producer_is_cast &&
+               DataTypeSize(cast_dst_type) >= DataTypeSize(cast_src_type)) {
+      return Status::OK();
+    }
+
+    // Check that nodes were not already optimized.
+    const string optimized_producer_name = OptimizedNodeName(
+        ParseNodeScopeAndName(producer->name()), DataTypeString(cast_dst_type));
+    const string optimized_consumer_name = OptimizedNodeName(
+        ParseNodeScopeAndName(consumer->name()), DataTypeString(cast_src_type));
+    const bool is_already_optimized =
+        ctx().node_map->NodeExists(optimized_consumer_name) ||
+        ctx().node_map->NodeExists(optimized_producer_name);
+    if (is_already_optimized) {
+      return Status::OK();
+    }
+
+    // Add copies of consumer and producer in reverse order.
+    NodeDef* input;
+    TF_RETURN_IF_ERROR(GetInputNode(producer->input(0), &input));
+    // Create new producer node.
+    NodeDef* new_producer = AddCopyNode(optimized_consumer_name, consumer);
+    new_producer->set_input(0, producer->input(0));
+    ctx().node_map->AddOutput(input->name(), new_producer->name());
+
+    // Create new consumer node.
+    NodeDef* new_consumer = AddCopyNode(optimized_producer_name, producer);
+    new_consumer->set_input(0, new_producer->name());
+
+    // Update the input type of the value-preserving node. The input and
+    // output types of the cast-like nodes remain the same.
+    if (producer_is_cast) {
+      // Op(Cast()) -> Cast(Op())
+      TF_RETURN_IF_ERROR(SetInputType(cast_src_type, new_producer));
+    } else {
+      // Cast(Op()) -> Op(Cast())
+      TF_RETURN_IF_ERROR(SetInputType(cast_dst_type, new_consumer));
+    }
+    ctx().node_map->AddOutput(new_producer->name(), new_consumer->name());
+
+    AddToOptimizationQueue(new_producer);
+    *simplified_node_name = new_consumer->name();
 
     return Status::OK();
   }
 
  private:
+  // Sets the type of the first input to dtype.
+  Status SetInputType(DataType dtype, NodeDef* node) {
+    const OpDef* op_def = nullptr;
+    TF_RETURN_IF_ERROR(OpRegistry::Global()->LookUpOpDef(node->op(), &op_def));
+    const OpDef::ArgDef& input_arg = op_def->input_arg(0);
+    const string& type_attr_name = input_arg.type_attr();
+    if (type_attr_name.empty()) {
+      if (input_arg.type() == DT_INVALID || input_arg.type() != dtype) {
+        return errors::InvalidArgument("Could not set input type of ",
+                                       node->op(), " op to ",
+                                       DataTypeString(dtype));
+      } else {
+        // Op has fixed input type that already matches dtype.
+        return Status::OK();
+      }
+    }
+    SetDataTypeToAttr(dtype, type_attr_name, node);
+    return Status::OK();
+  }
   // This optimization can be dangerous on devices other than CPU and
   // GPU. The transpose might not be implemented for image.type, or
-  // might be slower with image.type than with dst_type.
+  // might be slower with image.type than with cast_dst_type.
   bool NodeIsOnCpuOrGpu(const NodeDef* node) const {
     using str_util::StrContains;
 
@@ -1944,7 +1972,10 @@ class ReorderCastAndTranspose : public ArithmeticOptimizerStage {
            (StrContains(device, DEVICE_CPU) || StrContains(device, DEVICE_GPU));
   }
 
-  bool IsNumberType(DataType dtype) { return kNumberTypes.Contains(dtype); }
+  bool IsFixedSizeType(DataType dtype) {
+    return dtype != DT_STRING && dtype != DT_VARIANT && dtype != DT_RESOURCE &&
+           !kQuantizedTypes.Contains(dtype);
+  }
 };
 
 // Fold a multiply of a scalar into the following convolution. This folding
@@ -3453,8 +3484,8 @@ Status ArithmeticOptimizer::SimplifyArithmeticOps(bool can_use_shapes) {
     pipeline.AddStage<ReplaceMulWithSquare>(ctx, ctx_ext);
   if (options_.remove_logical_not)
     pipeline.AddStage<RemoveLogicalNotStage>(ctx, ctx_ext);
-  if (options_.reorder_cast_and_transpose)
-    pipeline.AddStage<ReorderCastAndTranspose>(ctx, ctx_ext);
+  if (options_.reorder_cast_like_and_value_preserving)
+    pipeline.AddStage<ReorderCastLikeAndValuePreserving>(ctx, ctx_ext);
   if (options_.simplify_aggregation)
     pipeline.AddStage<SimplifyAggregation>(ctx, ctx_ext);
   if (options_.hoist_cwise_unary_chains)

@@ -73,6 +73,17 @@ bool IsBitcast(const NodeDef& node) { return node.op() == "Bitcast"; }
 
 bool IsCast(const NodeDef& node) { return node.op() == "Cast"; }
 
+bool IsCastLike(const NodeDef& node) {
+  static const gtl::FlatSet<string>* const kCastLikeOps =
+      CHECK_NOTNULL((new gtl::FlatSet<string>{
+          "Angle", "Bucketize", "Cast", "CompareAndBitpack", "Dequantize",
+          "HistogramFixedWidth", "Imag", "IsFinite", "IsInf", "IsNan",
+          "Quantize", "QuantizeDownAndShrinkRange", "QuantizeV2",
+          "QuantizedInstanceNorm", "QuantizedRelu", "QuantizedRelu6",
+          "QuantizedReluX", "Real", "Requantize"}));
+  return kCastLikeOps->count(node.op()) > 0;
+}
+
 bool IsCheckNumerics(const NodeDef& node) {
   return node.op() == "CheckNumerics";
 }
@@ -195,6 +206,8 @@ bool IsExit(const NodeDef& node) {
 
 bool IsExp(const NodeDef& node) { return node.op() == "Exp"; }
 
+bool IsFakeParam(const NodeDef& node) { return node.op() == "FakeParam"; }
+
 bool IsFill(const NodeDef& node) { return node.op() == "Fill"; }
 
 bool IsFloorDiv(const NodeDef& node) { return node.op() == "FloorDiv"; }
@@ -298,6 +311,10 @@ bool IsPack(const NodeDef& node) { return node.op() == "Pack"; }
 bool IsPad(const NodeDef& node) {
   const auto& op = node.op();
   return op == "Pad" || op == "PadV2";
+}
+
+bool IsPartitionedCall(const NodeDef& node) {
+  return node.op() == "PartitionedCall";
 }
 
 bool IsPlaceholder(const NodeDef& node) {
@@ -416,6 +433,10 @@ bool IsStackPushOp(const NodeDef& node) {
 }
 bool IsStackPopOp(const NodeDef& node) {
   return node.op() == "StackPop" || node.op() == "StackPopV2";
+}
+
+bool IsStatefulPartitionedCall(const NodeDef& node) {
+  return node.op() == "StatefulPartitionedCall";
 }
 
 bool IsStopGradient(const NodeDef& node) {
@@ -632,8 +653,15 @@ bool IsValuePreserving(const NodeDef& node) {
       CHECK_NOTNULL((new gtl::FlatSet<string>{
           "InvertPermutation",
           "Reverse",
+          "ReverseV2",
           "Roll",
           "Transpose",
+          "DepthToSpace",
+          "SpaceToDepth",
+          "BatchToSpace",
+          "BatchToSpaceND",
+          "SpaceToBatch",
+          "SpaceToBatchND",
       }));
   return IsValueAndOrderPreserving(node) ||
          kValuePreservingOps->count(node.op()) > 0;

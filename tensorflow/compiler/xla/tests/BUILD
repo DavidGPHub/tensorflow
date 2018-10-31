@@ -476,7 +476,9 @@ xla_test(
     name = "params_test",
     srcs = ["params_test.cc"],
     shard_count = 30,
-    tags = ["optonly"],
+    tags = [
+        "optonly",
+    ],
     deps = [
         "//tensorflow/compiler/xla:array2d",
         "//tensorflow/compiler/xla:literal",
@@ -658,6 +660,7 @@ xla_test(
         "//tensorflow/compiler/xla/tests:literal_test_util",
         "//tensorflow/compiler/xla/tests:xla_internal_test_main",
         "//tensorflow/core:lib",
+        "@com_google_absl//absl/base",
         "@com_google_absl//absl/types:span",
     ],
 )
@@ -682,6 +685,7 @@ xla_test(
         "//tensorflow/compiler/xla/client:xla_builder",
         "//tensorflow/compiler/xla/tests:xla_internal_test_main",
         "//tensorflow/core:lib",
+        "@com_google_absl//absl/base",
     ],
 )
 
@@ -705,6 +709,7 @@ xla_test(
         "//tensorflow/compiler/xla/tests:literal_test_util",
         "//tensorflow/compiler/xla/tests:xla_internal_test_main",
         "//tensorflow/core:lib",
+        "@com_google_absl//absl/base",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -1614,6 +1619,7 @@ xla_test(
         "//tensorflow/core:stream_executor_no_cuda",
         "//tensorflow/core:test",
         "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/base",
     ],
 )
 
@@ -1858,6 +1864,7 @@ xla_test(
         "//tensorflow/compiler/xla/tests:xla_internal_test_main",
         "//tensorflow/core:lib",
         "//tensorflow/core:test",
+        "@com_google_absl//absl/base",
         "@com_google_absl//absl/types:span",
     ],
 )
@@ -2150,6 +2157,7 @@ xla_test(
         "//tensorflow/compiler/xla/tests:xla_internal_test_main",
         "//tensorflow/core:lib",
         "//tensorflow/core:test",
+        "@com_google_absl//absl/base",
         "@com_google_absl//absl/container:flat_hash_set",
     ],
 )

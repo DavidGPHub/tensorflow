@@ -1160,9 +1160,12 @@ class SymbolicShapeRefiner {
             node.attr().at("new_axis_mask").i() != 0) {
           valid = false;
         }
-        if (node.attr().count("shrink_axis_mask") > 0 &&
-            node.attr().at("shrink_axis_mask").i() != 0) {
-          valid = false;
+        int shrink_axis_mask = 0;
+        if (node.attr().count("shrink_axis_mask") > 0) {
+          shrink_axis_mask = node.attr().at("shrink_axis_mask").i();
+          // Shapes are 1D vectors, so they can only shrink along the first axis
+          // or not at all.
+          valid &= (shrink_axis_mask == 1 || shrink_axis_mask == 0);
         }
         int begin_mask = 0;
         if (node.attr().count("begin_mask") > 0) {
@@ -1182,17 +1185,28 @@ class SymbolicShapeRefiner {
                         ? slice_begin->flat<int32>()(0)
                         : slice_begin->flat<int64>()(0);
           }
-          int64 end = std::numeric_limits<int64>::max();
-          if (end_mask == 0) {
-            end =
-                (slice_end->dtype() == DT_INT32 ? slice_end->flat<int32>()(0)
-                                                : slice_end->flat<int64>()(0));
-          }
-          int64 stride = slice_stride->dtype() == DT_INT32
-                             ? slice_stride->flat<int32>()(0)
-                             : slice_stride->flat<int64>()(0);
           ShapeHandle result;
-          TF_RETURN_IF_ERROR(ic->Subshape(input, begin, end, stride, &result));
+          if (shrink_axis_mask) {
+            // Returns a Tensor of rank N-1. For 1D vectors, this is the scalar
+            // value at index |begin|. |End| and |stride| are ignored.
+            if (begin < InferenceContext::Rank(input)) {
+              result = ic->MakeShape({ic->Dim(input, begin)});
+            } else {
+              result = ic->UnknownShape();
+            }
+          } else {
+            int64 end = std::numeric_limits<int64>::max();
+            if (end_mask == 0) {
+              end = (slice_end->dtype() == DT_INT32
+                         ? slice_end->flat<int32>()(0)
+                         : slice_end->flat<int64>()(0));
+            }
+            int64 stride = slice_stride->dtype() == DT_INT32
+                               ? slice_stride->flat<int32>()(0)
+                               : slice_stride->flat<int64>()(0);
+            TF_RETURN_IF_ERROR(
+                ic->Subshape(input, begin, end, stride, &result));
+          }
           c->output_tensors_as_shapes.resize(1);
           c->output_tensors_as_shapes[0] = result;
         }
@@ -1285,15 +1299,6 @@ class SymbolicShapeRefiner {
     // Integer tensors of rank one can also be interpreted as a shape
     // provided all their values are >= -1.
     if (IsIntegerVector(tensor)) {
-#if 0
-      ShapeHandle tensor_shape = ic->Vector(tensor.NumElements());
-      ShapeHandle shp;
-      // Note that MakeShapeFromTensor filters out invalid values (e.g., < -1).
-      if (ic->MakeShapeFromTensor(&tensor, tensor_shape, &shp).ok()) {
-        *tensors_as_shapes = shp;
-        return true;
-      }
-#else
       bool has_values_smaller_than_minus_1 = false;
       std::vector<DimensionHandle> dims;
       for (int i = 0; i < tensor.NumElements(); i++) {
@@ -1305,7 +1310,6 @@ class SymbolicShapeRefiner {
       if (!has_values_smaller_than_minus_1) {
         *tensors_as_shapes = ic->MakeShape(dims);
       }
-#endif
     } else if (IsIntegerScalar(tensor)) {
       // Scalar constant.
       int64 value = tensor.dtype() == DT_INT32 ? tensor.flat<int32>()(0)

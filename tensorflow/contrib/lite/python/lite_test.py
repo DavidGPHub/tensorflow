@@ -421,7 +421,7 @@ class FromSessionTest(test_util.TensorFlowTestCase):
     # Convert model and ensure model is not None.
     converter = lite.TFLiteConverter.from_session(sess, [in_tensor],
                                                   [out_tensor])
-    converter.converter_mode = lite.ConverterMode.TOCO_FLEX_ALL
+    converter.target_ops = set([lite.OpsSet.SELECT_TF_OPS])
     tflite_model = converter.convert()
     self.assertTrue(tflite_model)
 
@@ -594,8 +594,17 @@ class FromFrozenGraphFile(test_util.TensorFlowTestCase):
   # TODO(nupurgarg): Test model loading in open source.
   def _initObjectDetectionArgs(self):
     # Initializes the arguments required for the object detection model.
-    self._graph_def_file = resource_loader.get_path_to_datafile(
-        'testdata/tflite_graph.pb')
+    # Looks for the model file which is saved in a different location interally
+    # and externally.
+    filename = resource_loader.get_path_to_datafile('testdata/tflite_graph.pb')
+    if not os.path.exists(filename):
+      filename = os.path.join(
+          resource_loader.get_root_dir_with_all_resources(),
+          '../tflite_mobilenet_ssd_quant_protobuf/tflite_graph.pb')
+      if not os.path.exists(filename):
+        raise IOError("File '{0}' does not exist.".format(filename))
+
+    self._graph_def_file = filename
     self._input_arrays = ['normalized_input_image_tensor']
     self._output_arrays = [
         'TFLite_Detection_PostProcess', 'TFLite_Detection_PostProcess:1',
